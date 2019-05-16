@@ -1,0 +1,223 @@
+---
+title: "Take Home"
+author: "Rahul Zende"
+date: "April 26, 2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Use the libraries as needed -
+```{r}
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(leaps)
+library(tree)
+```
+
+### We read the file into our environment -
+
+```{r}
+setwd("~/OneDrive - UW/Data Science/Glassdoor")
+data <- read.csv('input.csv')
+```
+
+### Now, we check the summary of the data being loaded -
+
+```{r}
+summary(data)
+```
+
+# PART 1:  JOB SLOT SALES AND PERFORMANCE DISTRIBUTION
+
+# What is the variation across the job packages we sell? -
+
+## What packages are most popular, based on the number of slots?
+
+```{r}
+job.slots.count.by.number.of.jobs <- aggregate(Employer.ID ~ Number.of.Slots, data = data, FUN = NROW)
+job.slots.count.by.number.of.jobs <- job.slots.count.by.number.of.jobs %>% rename(Count = Employer.ID)
+ggplot(job.slots.count.by.number.of.jobs, aes(x=Number.of.Slots, y=Count)) + geom_col(color="red", fill="white")
+# write.csv(job.slots.count.by.number.of.jobs, file = 'job_slots_count_by_number_of_jobs.csv', row.names = FALSE)
+```
+
+_The packages with 25 and 15 slots are most popular, with 891 and 873 contracts being signed respectively for those categories._  
+
+
+## What does the distribution of pricing look like?
+
+```{r}
+data$Price.Paid <- gsub("[^[:alnum:]]", "", data$Price.Paid)
+data$Price.Paid <- as.numeric(data$Price.Paid)
+mean(data$Price.Paid)
+median(data$Price.Paid)
+ggplot(data, aes(x=Price.Paid)) + geom_histogram(color='red', fill='white') + geom_vline(xintercept = mean(data$Price.Paid), linetype="dashed", color="blue")
+# boxplot(data$Price.Paid)
+```
+
+_Based on the above distribution, we can see that most contracts cost around $17,096.5 (median). Also, the mean price per package is $22,367.55 - but this is higher because of outliers present in the data (for example, one package was sold for $2,73,870 : which ends up skewing the mean calculation)._  
+
+
+
+## How does term length vary?
+
+```{r}
+data <- data %>% rename(Start.Date = ï..Start.Date)
+data$Start.Date <- as.character(data$Start.Date)
+data$End.Date <- as.character(data$End.Date)
+data$Start.Date <- strptime(data$Start.Date, format = '%d-%b-%y')
+data$End.Date <- strptime(data$End.Date, format = '%d-%b-%y')
+data$Term.Length <- round(difftime(data$End.Date, data$Start.Date, units = 'days'), 0)
+data$Term.Length <- as.numeric(data$Term.Length)
+
+ggplot(data, aes(x=data$Term.Length)) + geom_histogram(color='red', fill='white')
+```
+
+_As we can see here, the overwhelming favorite amongst contracts is the one with 1 year term (duration of 365 days). Out of the total contracts (3078) in this dataset, 2133 contracts are signed for a duration of 1 year - which is 69%._  
+
+
+# What metrics should we use to compare delivery performance across customers?  How does performance vary in terms of:
+
+_As per the information given, the performance of products is evaluated by customers based on number of applications they get vs cost-per-application. Let's create a calculated column in our dataframe to indicate that metric indicating performance._
+
+```{r}
+data$Marketplace.Value.Delivered <- gsub("[^[:alnum:]]", "", data$Marketplace.Value.Delivered)
+data$Marketplace.Value.Delivered <- as.numeric(data$Marketplace.Value.Delivered)
+data$Applications <- as.character(data$Applications)
+data$Applications <- gsub(",", "", data$Applications)
+data$Applications <- as.numeric(data$Applications)
+
+data$Cost.Per.Application <- data$Marketplace.Value.Delivered / data$Applications
+data$Performance.Metric <- data$Applications / (data$Number.of.Slots * data$Term.Length / 365) # we use this metric to calculate the break even performance for a given time frame
+```
+
+## - Application Metrics?
+
+```{r}
+# So, we plot the number of applications against the performance metric
+ggplot(data, aes(x=log10(data$Applications))) + geom_point(aes(y=data$Performance.Metric), color='red')
+```
+
+_The relationship between the performance metric and number of appears to be decidely non-linear - i.e. exponential in nature._  
+
+## - Cost?
+
+```{r}
+# So, we plot the cost per package/contract against the performance metric
+ggplot(data, aes(x=log10(data$Price.Paid))) + geom_point(aes(y=data$Performance.Metric), color='blue')
+```
+
+_Here, the relationship between the performance metric and Price Paid is not to clear. It is hard to spot a trend here._  
+
+## - Marketplace value?
+
+```{r}
+# So, we plot the marketplace value against the performance metric
+ggplot(data, aes(x=log10(data$Marketplace.Value.Delivered))) + geom_point(aes(y=data$Performance.Metric), color='orange')
+```
+
+_The relationship here, appears to be non-linear again - and seems to be exponential._  
+
+
+_Based on the above plots, we can see that the logarithm (base 10) all of 2 metrics (Applications & Marketplace Value Delivered) correlate well with our calculated performance metric._  
+_Comparing all plots above, the performance metric seems to be something feasible that can be used to evaluate performance across customers!_  
+
+# PART 2:  RETENTION ANALYSIS
+
+## What factor or combination of factors best predict likelihood to retain (i.e., Renewed = 1)?  Which factors appear to have the greatest impact on retention?
+
+```{r}
+data.cor <- cor(select(data, Term.Length, Number.of.Slots, Price.Paid, Marketplace.Value.Delivered, Applications, Renewed.), use = "complete.obs")
+corrplot(data.cor, order = "hclust") 
+
+reg.fss <- regsubsets(Renewed. ~ ., data = data[, -c(1,2,3,4,5,12,13)], nvmax = 10)
+reg.fss.summary <- summary(reg.fss)
+reg.fss.summary
+reg.fss.summary$rsq
+```
+
+_Based on the above correlation plot and the forward subset selection calculation results, we can conclude that the predictor variables being checked here are correlating well with the response variable (albeit to varying degrees)._  
+
+```{r}
+sample_size <- floor(NROW(data) * 0.75) # choosing 75% data for training, rest 25% for testing
+set.seed(1)                             # setting a seed value so that the split is reproducible
+training.indexes <- sample(seq_len(NROW(data)), size = sample_size)
+
+training.data <- data[training.indexes, ] # training dataset
+testing.data <- data[-training.indexes, ] # testing dataset, the two are mutually exclusive
+
+
+linear.model.1 <- glm(Renewed. ~ Number.of.Slots + Price.Paid + Marketplace.Value.Delivered + Applications + Term.Length, data = training.data, family = binomial)
+summary(linear.model.1)
+plot(linear.model.1$residuals)
+```
+
+_We choose the features with low p-values (***) for our subsequent model, designed to only include the ones where the null hypothesis can be rejected for an alpha value of 0.001!_  
+
+```{r}
+linear.model.2 <- glm(Renewed. ~ Number.of.Slots * Term.Length, data = training.data, family = binomial)
+summary(linear.model.2)
+plot(linear.model.2$residuals)
+```
+
+
+```{r}
+qplot(Term.Length, Number.of.Slots, data=data, colour=Renewed., size=I(4))
+```
+
+_The plot does not display any evident pattern in the data based on our features used._  
+
+
+```{r}
+data$Renewed. <- as.factor(data$Renewed.)
+tree.model <- tree(Renewed. ~ Number.of.Slots + Price.Paid + Marketplace.Value.Delivered + Applications + Term.Length, data = training.data)
+summary(tree.model)
+plot(tree.model)
+text(tree.model)
+```
+
+```{r}
+predictions.lm.1 <- predict(linear.model.1, testing.data)
+predictions.lm.2 <- predict(linear.model.2, testing.data)
+predictions.tree <- predict(tree.model, testing.data)
+
+
+# assessing raw classification accuracy
+
+accuracy.lm.1 <- mean(testing.data$Renewed. == round(predictions.lm.1, 0))
+accuracy.lm.1
+
+accuracy.lm.2 <- mean(testing.data$Renewed. == round(predictions.lm.2, 0))
+accuracy.lm.2
+
+accuracy.tree <- mean(testing.data$Renewed. == round(predictions.tree, 0))
+accuracy.tree
+
+# creating a confusion matrix for the tree model
+table(testing.data$Renewed., round(predictions.tree, 0))
+```
+
+## How well does your analysis in #3 predict retention?  What other factors might you want to investigate to see if they could improve your analysis?
+
+_Based on the confusion matrix for the tree model (which is the better amongst the three we fitted) we developed, we can see that it has -_  
+
+_Raw accuracy is 69.3%_  
+_Sensitivity = TP/(TP + FN) = 57/(57 + 39) = 57/96 = 0.594  i.e. 59.4%_  
+_Specificity = TN/(TN + FP) = 477/(477 + 197) = 477/674 = 70.8%_  
+
+_So, we can conclude that our classification tree model does a better job of predicting whether a contract will be renewed, compared to whether the contract will not be renewed._  
+_Also, we might want to figure out what impact factors like job industry, job roles being posted, the employer's attractiveness to the job applicants etc. have on the renewal of contracts that are being posted - see if there is some correlation between those variables!_  
+
+## Based on your analysis, what modifications would you recommend we make to our ad platform algorithm to improve retention?
+
+_Based on my analysis, I can say that the Term length of the contract and the Number of slots being offered play a huge role in determining whether a contract is renewed or not._     
+_Glassdoor should try to sell more contracts that are one year (365 days in terms of duration) and focus on assessing which packages are renewed more (compare the number of slots being offered per package)!_  
+
+
+
+
